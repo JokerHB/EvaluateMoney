@@ -537,8 +537,10 @@ export default function Home() {
             <div className="shared-expense-now"><span>当前共同支出</span><b>¥{money(currentExpense)}<small>/月</small></b></div>
           </div>
           <label className="field-label" htmlFor="household-saving">家庭希望每月存下</label>
-          <div className="money-input"><span>¥</span><Input id="household-saving" type="number" min={0} step={500} placeholder="请输入储蓄目标" value={numberFieldValue(savingsTarget)} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setSavingsTarget(Number(event.target.value) || 0)} /><small>/月</small></div>
-          <div className="preset-chips shared-presets">{savingsPresets.map((value) => <button type="button" key={value} className={savingsTarget === value ? "active" : ""} onClick={() => setSavingsTarget(value)}>{compactMoney(value)}</button>)}</div>
+          <div className="savings-control">
+            <div className="money-input"><span>¥</span><Input id="household-saving" type="number" min={0} step={500} placeholder="请输入储蓄目标" value={numberFieldValue(savingsTarget)} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setSavingsTarget(Number(event.target.value) || 0)} /><small>/月</small></div>
+            <div className="preset-chips" role="group" aria-label="快速选择每月储蓄目标">{savingsPresets.map((value) => <button type="button" key={value} className={savingsTarget === value ? "active" : ""} aria-pressed={savingsTarget === value} onClick={() => setSavingsTarget(value)}>{compactMoney(value)}</button>)}</div>
+          </div>
           <div className="compact-field household-reserve"><span>家庭应急金目标</span><div><Input aria-label="家庭应急金目标" type="number" min={0} step={1000} value={numberFieldValue(reserveTarget)} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setReserveTarget(Number(event.target.value) || 0)} /><small>元</small></div></div>
           <div className="reserve-presets"><span>按当前共同支出快速设定</span><div>{reserveMonthPresets.map((months) => {
             const target = Math.round(currentExpense * months);
