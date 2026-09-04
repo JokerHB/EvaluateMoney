@@ -49,4 +49,5 @@ Thumbs.db
 
 # Personal exports produced by the calculator
 /家庭经济账*.csv
+/家庭经济账-*.json
 /exports/

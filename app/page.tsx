@@ -1,17 +1,18 @@
 "use client";
 /* oxlint-disable react/react-compiler */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Area, CartesianGrid, ComposedChart, Line, ReferenceLine, XAxis, YAxis } from "recharts";
 import {
   ArrowRight, Calculator, CalendarClock, CircleHelp, Coins, Download,
   ExternalLink, Gift, Home as HomeIcon, MapPin, PiggyBank, Plus, Printer,
-  RotateCcw, Settings2, ShieldCheck, Trash2, TrendingUp, UserRound, Users,
+  RotateCcw, Save, FolderOpen, Settings2, ShieldCheck, Trash2, TrendingUp, UserRound, Users,
   WalletCards,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
@@ -19,6 +20,7 @@ import {
   incomeProjection, solveGrossForAnnualNet, solveGrossForRegularMonthlyNet,
   type CityConfig, type CityKey, type Expense,
 } from "./finance";
+import { MAX_PLAN_BYTES, parsePlan, serializePlan, planFilename, type CalculatorState, type SavedPlan, type PersonId, type PersonState, type HouseholdMode, type ReverseOwner } from "./plan";
 
 const STORAGE_KEY = "personal-economy-ledger-v2";
 const LEGACY_STORAGE_KEY = "personal-economy-ledger-v1";
@@ -29,28 +31,6 @@ const cloneExpenses = (items: Expense[]) => items.map((item) => ({ ...item }));
 const salaryPresets = [15000, 20000, 25000, 30000, 35000];
 const savingsPresets = [3000, 5000, 8000, 10000];
 const reserveMonthPresets = [3, 6, 12];
-
-type PersonId = "primary" | "partner";
-type HouseholdMode = "single" | "couple";
-type ReverseOwner = PersonId | "split";
-type ManualBases = { pension: number; medical: number; housing: number };
-
-type PersonState = {
-  id: PersonId;
-  name: string;
-  gross: number;
-  bonusMonths: number;
-  cityKey: CityKey;
-  config: CityConfig;
-  extraDeduction: number;
-  autoBase: boolean;
-  manualBases: ManualBases;
-  signingBonus: number;
-  relocationGrant: number;
-  equityGrant: number;
-  equityVestingYears: number;
-  extraRealizationRate: number;
-};
 
 const createPerson = (id: PersonId): PersonState => ({
   id,
@@ -199,12 +179,20 @@ export default function Home() {
   const [initialSavings, setInitialSavings] = useState(0);
   const [horizon, setHorizon] = useState(60);
   const [hydrated, setHydrated] = useState(false);
+  const [planName, setPlanName] = useState("我的家庭方案");
+  const [pendingPlan, setPendingPlan] = useState<SavedPlan | null>(null);
+  const [planNotice, setPlanNotice] = useState("");
+  const [planError, setPlanError] = useState("");
+  const [storageWarning, setStorageWarning] = useState("");
+  const [isReadingPlan, setIsReadingPlan] = useState(false);
+  const planFileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const state = JSON.parse(saved);
+        if (typeof state.planName === "string") setPlanName(state.planName.slice(0, 80));
         if (state.householdMode === "single" || state.householdMode === "couple") setHouseholdMode(state.householdMode);
         if (state.calcMode === "forward" || state.calcMode === "reverse") setCalcMode(state.calcMode);
         setPrimary(hydratePerson(state.primary, createPerson("primary")));
@@ -249,11 +237,16 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      householdMode, calcMode, primary, partner, reverseOwner, comparePersonId,
-      expenses, expenseScenario, savingsTarget, reserveTarget, initialSavings, horizon,
-    }));
-  }, [householdMode, calcMode, primary, partner, reverseOwner, comparePersonId, expenses, expenseScenario, savingsTarget, reserveTarget, initialSavings, horizon, hydrated]);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        householdMode, calcMode, primary, partner, reverseOwner, comparePersonId,
+        expenses, expenseScenario, savingsTarget, reserveTarget, initialSavings, horizon, planName,
+      }));
+      setStorageWarning("");
+    } catch {
+      setStorageWarning("浏览器自动记忆不可用，请用“保存方案”下载备份；当前测算仍可继续。");
+    }
+  }, [householdMode, calcMode, primary, partner, reverseOwner, comparePersonId, expenses, expenseScenario, savingsTarget, reserveTarget, initialSavings, horizon, planName, hydrated]);
 
   const people = useMemo(() => householdMode === "couple" ? [primary, partner] : [primary], [householdMode, primary, partner]);
   const personMap: Record<PersonId, PersonState> = { primary, partner };
@@ -359,6 +352,9 @@ export default function Home() {
     setExpenses((items) => [...items, { id: `expense-${Date.now()}`, name: "新支出", amount: 0, frequency: "monthly", duration: 0, confirmed: false }]);
   };
   const resetAll = () => {
+    setPlanName("我的家庭方案");
+    setPlanNotice("");
+    setPlanError("");
     setHouseholdMode("single");
     setCalcMode("forward");
     setPrimary(createPerson("primary"));
@@ -371,8 +367,77 @@ export default function Home() {
     setReserveTarget(100000);
     setInitialSavings(0);
     setHorizon(60);
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch { /* Downloads remain available when browser storage is blocked. */ }
+  };
+  const savePlan = () => {
+    setPlanError("");
+    setPlanNotice("");
+    try {
+      const now = new Date();
+      const state: CalculatorState = {
+        householdMode, calcMode, primary, partner, reverseOwner, comparePersonId,
+        expenses, expenseScenario, savingsTarget, reserveTarget, initialSavings, horizon,
+      };
+      const json = serializePlan(state, planName, {
+        householdAnnualGross, householdAnnualTax, householdAnnualContributions,
+        householdSalaryMonthlyNet, householdRegularMonthlyNet, householdFirstYearExtraNet,
+        firstYearAverageNet, currentExpense, postLoanExpense, annualSpend, salarySurplus, firstYearAverageSurplus,
+        reverseAnnualTarget, reverseGrossMap, reverseCashSafeGross, reverseHouseholdAnnualGross,
+        reserveMonths: Number.isFinite(reserveMonths) ? reserveMonths : null,
+        people: projections, timeline, offerRows,
+      }, now);
+      const url = URL.createObjectURL(new Blob([json], { type: "application/json;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = planFilename(planName, now);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setPlanNotice("已发起方案文件下载。请保留该 JSON 文件，之后可加载还原；继续修改后请重新保存。");
+    } catch (error) {
+      setPlanError(error instanceof Error ? error.message : "方案保存失败，请重试。");
+    }
+  };
+  const readPlanFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    setIsReadingPlan(true);
+    setPlanError("");
+    setPlanNotice("");
+    try {
+      if (file.size > MAX_PLAN_BYTES) throw new Error("方案文件不能超过 1 MB。");
+      const loaded = parsePlan(await file.text());
+      setPendingPlan(loaded);
+    } catch (error) {
+      setPlanError(`${error instanceof Error ? error.message : "读取失败，请重试。"} 当前测算未改变。`);
+    } finally {
+      setIsReadingPlan(false);
+    }
+  };
+  const restorePlan = () => {
+    if (!pendingPlan) return;
+    const state = pendingPlan.state;
+    setHouseholdMode(state.householdMode);
+    setCalcMode(state.calcMode);
+    setPrimary(state.primary);
+    setPartner(state.partner);
+    setReverseOwner(state.reverseOwner);
+    setComparePersonId(state.comparePersonId);
+    setExpenses(state.expenses);
+    setExpenseScenario(state.expenseScenario);
+    setSavingsTarget(state.savingsTarget);
+    setReserveTarget(state.reserveTarget);
+    setInitialSavings(state.initialSavings);
+    setHorizon(state.horizon);
+    setPlanName(pendingPlan.name);
+    setPlanNotice(`已加载“${pendingPlan.name}”，完整测算参数已还原，结果已重新计算。`);
+    setPlanError("");
+    setPendingPlan(null);
   };
   const exportCsv = () => {
     const rows: Array<Array<string | number>> = [
@@ -412,6 +477,35 @@ export default function Home() {
         <div><span className="eyebrow">HOUSEHOLD INCOME ↔ LIFE PLAN</span><h1>两个人的收入，<em>一张家庭账。</em></h1></div>
         <p>双方工资、年终奖、参保地和阶段性收入分别计算；房租、车贷、生活费、储蓄与应急金作为家庭共同目标。切回单人模式时，原有测算逻辑保持不变。</p>
       </div>
+
+      <section className="plan-toolbar" aria-label="保存与加载测算方案">
+        <label htmlFor="plan-name">方案名称<Input id="plan-name" maxLength={80} value={planName} onChange={(event) => setPlanName(event.target.value)} placeholder="例如：北京双职工方案" /></label>
+        <div className="plan-actions">
+          <Button onClick={savePlan} disabled={!hydrated || isReadingPlan}><Save />保存方案</Button>
+          <Button variant="outline" onClick={() => planFileInput.current?.click()} disabled={!hydrated || isReadingPlan}><FolderOpen />{isReadingPlan ? "正在读取…" : "加载方案"}</Button>
+        </div>
+        <input ref={planFileInput} className="hidden" type="file" accept=".json,application/json" aria-label="选择本地方案文件" onChange={readPlanFile} />
+        <p>保存为本地 JSON 文件，可在本机或其他设备加载还原。CSV 表格仅供查看，不能还原页面。文件含财务信息，请妥善保管。</p>
+        {planNotice && <output className="plan-notice">{planNotice}</output>}
+        {planError && <p className="plan-error" role="alert">{planError}</p>}
+        {storageWarning && <output className="plan-error">{storageWarning}</output>}
+      </section>
+
+      <AlertDialog open={pendingPlan !== null} onOpenChange={(open) => { if (!open) setPendingPlan(null); }}>
+        <AlertDialogContent className="plan-import-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>加载并替换当前测算？</AlertDialogTitle>
+            <AlertDialogDescription>加载会覆盖当前页面的输入和浏览器自动记忆。尚未下载的修改不会另存，请先保存需要保留的方案。</AlertDialogDescription>
+          </AlertDialogHeader>
+          {pendingPlan && <dl className="plan-preview">
+            <div><dt>方案</dt><dd>{pendingPlan.name}</dd></div>
+            <div><dt>保存于</dt><dd>{new Date(pendingPlan.savedAt).toLocaleString("zh-CN")}</dd></div>
+            <div><dt>模式</dt><dd>{pendingPlan.state.householdMode === "couple" ? "双人家庭" : "单人"} · {pendingPlan.state.calcMode === "forward" ? "正向计算" : "反向计算"}</dd></div>
+            <div><dt>支出与周期</dt><dd>{pendingPlan.state.expenses.length} 项 · {pendingPlan.state.horizon / 12} 年</dd></div>
+          </dl>}
+          <AlertDialogFooter><AlertDialogCancel>取消，保留当前页面</AlertDialogCancel><AlertDialogAction onClick={restorePlan}>确认加载</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <div className="top-switches">
         <div className="mode-switch" role="tablist" aria-label="计算模式">
