@@ -40,7 +40,6 @@ export const CITY_PRESETS: Record<CityKey, CityConfig> = {
 
 export const HOHHOT_EXPENSES: Expense[] = [
   { id: "rent", name: "房租", amount: 2000, frequency: "monthly", duration: 0, confirmed: true },
-  { id: "car-loan", name: "车贷", amount: 5400, frequency: "monthly", duration: 30, confirmed: true },
   { id: "living", name: "吃饭、水电与通信", amount: 2500, frequency: "monthly", duration: 0, confirmed: false },
   { id: "car-running", name: "油费、停车与保养", amount: 1000, frequency: "monthly", duration: 0, confirmed: false },
   { id: "car-insurance", name: "车险", amount: 6000, frequency: "annual", duration: 0, confirmed: false },
@@ -49,7 +48,6 @@ export const HOHHOT_EXPENSES: Expense[] = [
 
 export const BEIJING_EXPENSES: Expense[] = [
   { id: "rent", name: "房租", amount: 5000, frequency: "monthly", duration: 0, confirmed: false },
-  { id: "car-loan", name: "车贷", amount: 5400, frequency: "monthly", duration: 30, confirmed: true },
   { id: "living", name: "吃饭、水电与通信", amount: 3200, frequency: "monthly", duration: 0, confirmed: false },
   { id: "car-running", name: "油费、停车与保养", amount: 1200, frequency: "monthly", duration: 0, confirmed: false },
   { id: "car-insurance", name: "车险", amount: 6000, frequency: "annual", duration: 0, confirmed: false },
@@ -137,6 +135,38 @@ export function expenseAtMonth(expenses: Expense[], month: number) {
 
 export function annualExpenses(expenses: Expense[]) {
   return Array.from({ length: 12 }, (_, index) => expenseAtMonth(expenses, index + 1)).reduce((sum, value) => sum + value, 0);
+}
+
+export type ExpenseMilestone = {
+  lastPaymentMonth: number;
+  releaseMonth: number;
+  names: string[];
+  monthlyReduction: number;
+};
+
+// No inference from names: a mortgage, debt or any other finite recurring
+// expense ends after its configured final payment, not at a fixed month.
+export function expenseSchedule(expenses: Expense[], horizon: number) {
+  const groups = new Map<number, ExpenseMilestone>();
+  for (const item of expenses) {
+    if (item.frequency === "once" || item.amount <= 0 || !Number.isFinite(item.amount) || !Number.isFinite(item.duration) || item.duration < 1) continue;
+    const lastPaymentMonth = Math.floor(item.duration);
+    const releaseMonth = lastPaymentMonth + 1;
+    const group = groups.get(releaseMonth) ?? { lastPaymentMonth, releaseMonth, names: [], monthlyReduction: 0 };
+    group.names.push(item.name.trim() || "未命名支出");
+    group.monthlyReduction += item.frequency === "annual" ? item.amount / 12 : item.amount;
+    groups.set(releaseMonth, group);
+  }
+  const milestones = [...groups.values()].sort((a, b) => a.releaseMonth - b.releaseMonth);
+  const visibleMilestones = milestones.filter((item) => item.releaseMonth <= horizon);
+  return {
+    milestones,
+    visibleMilestones,
+    nextMilestone: milestones[0] ?? null,
+    nextVisibleMilestone: visibleMilestones[0] ?? null,
+    insightMonth: visibleMilestones[0]?.releaseMonth ?? Math.min(12, horizon),
+    periodEndExpense: expenseAtMonth(expenses, horizon),
+  };
 }
 
 export function solveGrossForAnnualNet(targetAnnualNet: number, args: Omit<Parameters<typeof incomeProjection>[0], "gross">) {

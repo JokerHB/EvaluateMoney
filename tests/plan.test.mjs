@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CITY_PRESETS, incomeProjection } from "../app/finance.ts";
+import { CITY_PRESETS, incomeProjection, expenseSchedule } from "../app/finance.ts";
 import { parsePlan, serializePlan, planFilename, MAX_PLAN_BYTES } from "../app/plan.ts";
 
 function fixture(mode = "couple") {
@@ -101,4 +101,15 @@ test("non-finite data cannot be saved and filenames are safe", () => {
   assert.ok(filename.endsWith(".json"));
   assert.ok(!/[\\/:]/.test(filename));
   assert.equal(parsePlan(serializePlan(fixture(), "   ", {}, savedAt)).name, "未命名方案");
+});
+
+test("existing v1 plans retain repayment entries and derive their real expiry", () => {
+  const original = fixture();
+  const loaded = parsePlan(serializePlan(original, "旧版车贷方案", { postLoanExpense: 999999 }, savedAt));
+  assert.deepEqual(loaded.state.expenses, original.expenses);
+  const schedule = expenseSchedule(loaded.state.expenses, loaded.state.horizon);
+  assert.equal(schedule.nextMilestone.lastPaymentMonth, 30);
+  assert.equal(schedule.nextMilestone.releaseMonth, 31);
+  assert.deepEqual(schedule.nextMilestone.names, ["车贷"]);
+  assert.equal(schedule.periodEndExpense, 5000 / 12);
 });

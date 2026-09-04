@@ -16,7 +16,7 @@ import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, A
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
-  BEIJING_EXPENSES, CITY_PRESETS, HOHHOT_EXPENSES, annualExpenses, expenseAtMonth,
+  BEIJING_EXPENSES, CITY_PRESETS, HOHHOT_EXPENSES, annualExpenses, expenseAtMonth, expenseSchedule,
   incomeProjection, solveGrossForAnnualNet, solveGrossForRegularMonthlyNet,
   type CityConfig, type CityKey, type Expense,
 } from "./finance";
@@ -260,7 +260,8 @@ export default function Home() {
   const firstYearAverageNet = householdSalaryMonthlyNet + householdFirstYearExtraNet / 12;
 
   const currentExpense = useMemo(() => expenseAtMonth(expenses, 1), [expenses]);
-  const postLoanExpense = useMemo(() => expenseAtMonth(expenses, 31), [expenses]);
+  const schedule = useMemo(() => expenseSchedule(expenses, horizon), [expenses, horizon]);
+  const { periodEndExpense, nextMilestone, nextVisibleMilestone, insightMonth } = schedule;
   const annualSpend = useMemo(() => annualExpenses(expenses), [expenses]);
   const salarySurplus = householdSalaryMonthlyNet - currentExpense;
   const firstYearAverageSurplus = firstYearAverageNet - currentExpense;
@@ -327,7 +328,7 @@ export default function Home() {
     const longTermNet = candidate.averageMonthlyNet + otherProjections.reduce((sum, item) => sum + item.averageMonthlyNet, 0);
     const annualGross = candidate.annualGross + otherProjections.reduce((sum, item) => sum + item.annualGross, 0);
     const firstYearNet = longTermNet + householdFirstYearExtraNet / 12;
-    return { salary, annualGross, longTermNet, firstYearNet, currentLeft: firstYearNet - currentExpense, futureLeft: longTermNet - postLoanExpense };
+    return { salary, annualGross, longTermNet, firstYearNet, currentLeft: firstYearNet - currentExpense, futureLeft: longTermNet - periodEndExpense };
   });
 
   const updatePerson = (id: PersonId, patch: Partial<PersonState>) => {
@@ -347,9 +348,9 @@ export default function Home() {
     setExpenseScenario("custom");
     setExpenses((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
   };
-  const addExpense = () => {
+  const addExpense = (name = "新支出") => {
     setExpenseScenario("custom");
-    setExpenses((items) => [...items, { id: `expense-${Date.now()}`, name: "新支出", amount: 0, frequency: "monthly", duration: 0, confirmed: false }]);
+    setExpenses((items) => [...items, { id: `expense-${crypto.randomUUID()}`, name, amount: 0, frequency: "monthly", duration: 0, confirmed: false }]);
   };
   const resetAll = () => {
     setPlanName("我的家庭方案");
@@ -384,7 +385,7 @@ export default function Home() {
       const json = serializePlan(state, planName, {
         householdAnnualGross, householdAnnualTax, householdAnnualContributions,
         householdSalaryMonthlyNet, householdRegularMonthlyNet, householdFirstYearExtraNet,
-        firstYearAverageNet, currentExpense, postLoanExpense, annualSpend, salarySurplus, firstYearAverageSurplus,
+        firstYearAverageNet, currentExpense, periodEndExpense, expenseMilestones: schedule.milestones, annualSpend, salarySurplus, firstYearAverageSurplus,
         reverseAnnualTarget, reverseGrossMap, reverseCashSafeGross, reverseHouseholdAnnualGross,
         reserveMonths: Number.isFinite(reserveMonths) ? reserveMonths : null,
         people: projections, timeline, offerRows,
@@ -446,6 +447,7 @@ export default function Home() {
       ["工资长期月均到手", Math.round(householdSalaryMonthlyNet)],
       ["首年综合月均到手", Math.round(firstYearAverageNet)],
       ["当前月共同支出", Math.round(currentExpense)],
+      [`第${horizon}个月共同支出`, Math.round(periodEndExpense)],
       ["工资口径月结余", Math.round(salarySurplus)],
       ["期初可用存款", initialSavings],
       [`${horizon / 12}年后可动用余额`, Math.round(timeline.at(-1)?.cumulative ?? initialSavings)],
@@ -455,6 +457,9 @@ export default function Home() {
       [],
       ["共同支出项目", "金额", "频率", "持续月数", "口径"],
       ...expenses.map((item) => [item.name, item.amount, item.frequency, item.duration || "长期", item.confirmed ? "已确认" : "估算"]),
+      [],
+      ["支出到期项目", "最后计入月份", "停止计入月份", "月均支出减少"],
+      ...schedule.milestones.map((item) => [item.names.join("、"), item.lastPaymentMonth, item.releaseMonth, Math.round(item.monthlyReduction)]),
     ];
     const csv = "\uFEFF" + rows.map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(",")).join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -475,7 +480,7 @@ export default function Home() {
     <section className="workspace household-workspace" id="top">
       <div className="workspace-intro">
         <div><span className="eyebrow">HOUSEHOLD INCOME ↔ LIFE PLAN</span><h1>两个人的收入，<em>一张家庭账。</em></h1></div>
-        <p>双方工资、年终奖、参保地和阶段性收入分别计算；房租、车贷、生活费、储蓄与应急金作为家庭共同目标。切回单人模式时，原有测算逻辑保持不变。</p>
+        <p>双方工资、年终奖、参保地和阶段性收入分别计算；住房、生活费、各类还款、储蓄与应急金作为家庭共同目标。没有贷款也可以直接测算。</p>
       </div>
 
       <section className="plan-toolbar" aria-label="保存与加载测算方案">
@@ -527,7 +532,7 @@ export default function Home() {
         <Card className="input-card shared-plan-card"><CardContent>
           <div className="card-kicker">家庭共同目标</div>
           <div className="quick-config">
-            <fieldset className="quick-choice"><legend>共同生活方案</legend><div><button type="button" className={expenseScenario === "hohhot" ? "active" : ""} onClick={() => applyExpensePreset("hohhot")}>呼市当前</button><button type="button" className={expenseScenario === "beijing" ? "active" : ""} onClick={() => applyExpensePreset("beijing")}>北京估算</button></div></fieldset>
+            <fieldset className="quick-choice"><legend>生活费预设（不含还款，替换清单）</legend><div><button type="button" className={expenseScenario === "hohhot" ? "active" : ""} onClick={() => applyExpensePreset("hohhot")}>呼市估算</button><button type="button" className={expenseScenario === "beijing" ? "active" : ""} onClick={() => applyExpensePreset("beijing")}>北京估算</button></div></fieldset>
             <div className="shared-expense-now"><span>当前共同支出</span><b>¥{money(currentExpense)}<small>/月</small></b></div>
           </div>
           <label className="field-label" htmlFor="household-saving">家庭希望每月存下</label>
@@ -580,19 +585,26 @@ export default function Home() {
 
     <section className="content-section" id="ledger">
       <div className="section-head"><div><span>03 · SHARED EXPENSE LEDGER</span><h2>收入分开算，家庭支出合在一起</h2></div><p>“长期”会一直计入；短期支出到期后自动退出。若某项支出属于个人，也可以在名称中注明“本人”或“伴侣”。</p></div>
-      <div className="preset-row"><span>快速套用共同生活方案</span><button className={expenseScenario === "hohhot" ? "active" : ""} onClick={() => applyExpensePreset("hohhot")}><MapPin size={14} />呼和浩特当前</button><button className={expenseScenario === "beijing" ? "active" : ""} onClick={() => applyExpensePreset("beijing")}><MapPin size={14} />北京生活估算</button><small>默认金额可直接修改；夫妻共同生活后，建议逐项替换为真实家庭支出。</small></div>
+      <div className="preset-row"><span>快速套用共同生活方案</span><button className={expenseScenario === "hohhot" ? "active" : ""} onClick={() => applyExpensePreset("hohhot")}><MapPin size={14} />呼和浩特估算</button><button className={expenseScenario === "beijing" ? "active" : ""} onClick={() => applyExpensePreset("beijing")}><MapPin size={14} />北京生活估算</button><small>预设不含任何还款，点击将替换当前支出清单；请按实际情况补充。</small></div>
+      <div className="repayment-tools">
+        <span>按需添加还款</span>
+        <Button variant="outline" onClick={() => addExpense("车贷")}><Plus />车贷</Button>
+        <Button variant="outline" onClick={() => addExpense("房贷")}><Plus />房贷</Button>
+        <Button variant="outline" onClick={() => addExpense("其他贷款/欠款还款")}><Plus />其他贷款／欠款</Button>
+        <p>无贷款无需添加，可删除不适用的项目。还款金额填写每期实际支付额（含利息），不是欠款本金；剩余月数填 0 或留空表示持续计入，不预测结束月份。</p>
+      </div>
       <Card className="ledger-card"><CardContent>
         <Table><TableHeader><TableRow><TableHead>共同支出项目</TableHead><TableHead>金额</TableHead><TableHead>频率</TableHead><TableHead>持续时间</TableHead><TableHead>口径</TableHead><TableHead><span className="sr-only">操作</span></TableHead></TableRow></TableHeader>
           <TableBody>{expenses.map((item) => <TableRow key={item.id}>
             <TableCell><Input aria-label="支出项目" value={item.name} onChange={(event) => updateExpense(item.id, { name: event.target.value })} /></TableCell>
             <TableCell><div className="table-money"><span>¥</span><Input aria-label={`${item.name}金额`} type="number" min={0} step={100} value={numberFieldValue(item.amount)} onFocus={(event) => event.currentTarget.select()} onChange={(event) => updateExpense(item.id, { amount: Number(event.target.value) || 0 })} /></div></TableCell>
             <TableCell><select aria-label={`${item.name}频率`} value={item.frequency} onChange={(event) => updateExpense(item.id, { frequency: event.target.value as Expense["frequency"] })}><option value="monthly">每月</option><option value="annual">每年</option><option value="once">一次性</option></select></TableCell>
-            <TableCell>{item.frequency === "once" ? <span className="muted-cell">首月计入</span> : <div className="duration-input"><Input aria-label={`${item.name}持续月数`} type="number" min={0} value={numberFieldValue(item.duration)} onFocus={(event) => event.currentTarget.select()} onChange={(event) => updateExpense(item.id, { duration: Number(event.target.value) || 0 })} /><small>{item.duration === 0 ? "长期" : "个月"}</small></div>}</TableCell>
+            <TableCell>{item.frequency === "once" ? <span className="muted-cell">首月计入</span> : <div className="duration-input"><Input aria-label={`${item.name}持续月数`} type="number" min={0} max={12000} step={1} value={numberFieldValue(item.duration)} onFocus={(event) => event.currentTarget.select()} onChange={(event) => updateExpense(item.id, { duration: Math.min(12000, Math.max(0, Math.floor(Number(event.target.value) || 0))) })} /><small>{item.duration === 0 ? "长期/未定" : "个月"}</small></div>}</TableCell>
             <TableCell><button className={`evidence-pill ${item.confirmed ? "confirmed" : "estimated"}`} onClick={() => updateExpense(item.id, { confirmed: !item.confirmed })}>{item.confirmed ? "已确认" : "估算"}</button></TableCell>
-            <TableCell><Button variant="ghost" size="icon-sm" aria-label={`删除${item.name}`} onClick={() => setExpenses((items) => items.filter((entry) => entry.id !== item.id))}><Trash2 /></Button></TableCell>
+            <TableCell><Button variant="ghost" size="icon-sm" aria-label={`删除${item.name}`} onClick={() => { setExpenseScenario("custom"); setExpenses((items) => items.filter((entry) => entry.id !== item.id)); }}><Trash2 /></Button></TableCell>
           </TableRow>)}</TableBody>
         </Table>
-        <div className="ledger-footer"><Button variant="outline" onClick={addExpense}><Plus />添加一项支出</Button><div><span>当前月合计</span><b>¥{money(currentExpense)}</b></div><div><span>车贷后合计</span><b>¥{money(postLoanExpense)}</b></div></div>
+        <div className="ledger-footer"><Button variant="outline" onClick={() => addExpense()}><Plus />添加一项支出</Button><div><span>当前月合计</span><b>¥{money(currentExpense)}</b></div><div><span>第{horizon}个月合计</span><b>¥{money(periodEndExpense)}</b></div></div>
       </CardContent></Card>
     </section>
 
@@ -602,18 +614,27 @@ export default function Home() {
         <div className="timeline-controls"><span>观察周期</span>{[36, 60, 120].map((value) => <button key={value} className={horizon === value ? "active" : ""} onClick={() => setHorizon(value)}>{value / 12}年</button>)}<label className="initial-savings" htmlFor="initial-savings"><span>家庭期初可用存款</span><div><b>¥</b><Input id="initial-savings" type="number" min={0} step={1000} placeholder="0" value={numberFieldValue(initialSavings)} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setInitialSavings(Number(event.target.value) || 0)} /></div></label></div>
         <Card className="chart-card"><CardContent>
           <ChartContainer className="timeline-chart" config={{ net: { label: "家庭月均到手", color: "#e5a45f" }, expense: { label: "共同月支出", color: "#8ab0aa" }, surplus: { label: "家庭当月结余", color: "#d9ece8" }, cumulative: { label: "累计可动用余额", color: "#f08f7e" } }}>
-            <ComposedChart data={timeline} margin={{ left: 8, right: 6, top: 20, bottom: 0 }}><defs><linearGradient id="surplusFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#d9ece8" stopOpacity={0.42}/><stop offset="100%" stopColor="#d9ece8" stopOpacity={0.03}/></linearGradient></defs><CartesianGrid vertical={false} stroke="rgba(255,255,255,.10)" /><XAxis dataKey="month" tickFormatter={(value) => `${value}月`} interval={Math.max(5, Math.floor(horizon / 10))} tickLine={false} axisLine={false} /><YAxis yAxisId="monthly" tickFormatter={(value) => `${Math.round(Number(value) / 1000)}k`} tickLine={false} axisLine={false} width={38} /><YAxis yAxisId="cumulative" orientation="right" tickFormatter={(value) => `${(Number(value) / 10000).toFixed(0)}万`} tickLine={false} axisLine={false} width={44} /><ChartTooltip content={<ChartTooltipContent indicator="line" />} /><ReferenceLine yAxisId="monthly" x={30} stroke="#e5a45f" strokeDasharray="4 4" label={{ value: "车贷结束", fill: "#e5a45f", fontSize: 10 }} /><ReferenceLine yAxisId="cumulative" y={0} stroke="rgba(240,143,126,.45)" strokeDasharray="3 4" /><Area yAxisId="monthly" type="monotone" dataKey="net" stroke="var(--color-net)" fillOpacity={0} strokeWidth={2} /><Area yAxisId="monthly" type="stepAfter" dataKey="expense" stroke="var(--color-expense)" fillOpacity={0} strokeWidth={2} /><Area yAxisId="monthly" type="monotone" dataKey="surplus" stroke="var(--color-surplus)" fill="url(#surplusFill)" strokeWidth={2} /><Line yAxisId="cumulative" type="monotone" dataKey="cumulative" stroke="var(--color-cumulative)" strokeWidth={3} dot={false} activeDot={{ r: 4 }} /></ComposedChart>
+            <ComposedChart data={timeline} margin={{ left: 8, right: 6, top: 20, bottom: 0 }}><defs><linearGradient id="surplusFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#d9ece8" stopOpacity={0.42}/><stop offset="100%" stopColor="#d9ece8" stopOpacity={0.03}/></linearGradient></defs><CartesianGrid vertical={false} stroke="rgba(255,255,255,.10)" /><XAxis dataKey="month" tickFormatter={(value) => `${value}月`} interval={Math.max(5, Math.floor(horizon / 10))} tickLine={false} axisLine={false} /><YAxis yAxisId="monthly" tickFormatter={(value) => `${Math.round(Number(value) / 1000)}k`} tickLine={false} axisLine={false} width={38} /><YAxis yAxisId="cumulative" orientation="right" tickFormatter={(value) => `${(Number(value) / 10000).toFixed(0)}万`} tickLine={false} axisLine={false} width={44} /><ChartTooltip content={<ChartTooltipContent indicator="line" />} />{schedule.visibleMilestones.slice(0, 3).map((milestone) => <ReferenceLine key={milestone.releaseMonth} yAxisId="monthly" x={milestone.releaseMonth} stroke="#e5a45f" strokeDasharray="4 4" label={{ value: milestone.names.length === 1 ? `${milestone.names[0].slice(0, 8)}结束` : `${milestone.names.length}项支出结束`, fill: "#e5a45f", fontSize: 12 }} />)}<ReferenceLine yAxisId="cumulative" y={0} stroke="rgba(240,143,126,.45)" strokeDasharray="3 4" /><Area yAxisId="monthly" type="monotone" dataKey="net" stroke="var(--color-net)" fillOpacity={0} strokeWidth={2} /><Area yAxisId="monthly" type="stepAfter" dataKey="expense" stroke="var(--color-expense)" fillOpacity={0} strokeWidth={2} /><Area yAxisId="monthly" type="monotone" dataKey="surplus" stroke="var(--color-surplus)" fill="url(#surplusFill)" strokeWidth={2} /><Line yAxisId="cumulative" type="monotone" dataKey="cumulative" stroke="var(--color-cumulative)" strokeWidth={3} dot={false} activeDot={{ r: 4 }} /></ComposedChart>
           </ChartContainer>
           <div className="chart-legend"><span><i className="income" />家庭首年综合月均 ¥{money(firstYearAverageNet)}</span><span><i className="expense" />共同支出 ¥{money(currentExpense)}</span><span><i className="future" />家庭当月结余</span><span><i className="cumulative" />累计可动用余额</span></div>
         </CardContent></Card>
-        <div className="timeline-insights"><article><span>第30个月可动用余额</span><b>¥{money(timeline[Math.min(29, timeline.length - 1)]?.cumulative ?? initialSavings)}</b><p>含家庭期初存款与车贷压力期结余</p></article><article><span>{horizon / 12}年后可动用余额</span><b>¥{money(timeline.at(-1)?.cumulative ?? initialSavings)}</b><p>未计投资收益与双方工资增长</p></article><article><span>车贷释放家庭现金流</span><b>+ ¥{money(currentExpense - postLoanExpense)}</b><p>从第31个月起每月</p></article></div>
+        <div className="timeline-insights">
+          <article><span>第{insightMonth}个月可动用余额</span><b>¥{money(timeline[insightMonth - 1]?.cumulative ?? initialSavings)}</b><p>{nextVisibleMilestone ? `${nextVisibleMilestone.names.join("、")}停止计入后的首月` : "第一年末参考值，不假设有任何贷款到期"}</p></article>
+          <article><span>{horizon / 12}年后可动用余额</span><b>¥{money(timeline.at(-1)?.cumulative ?? initialSavings)}</b><p>未计投资收益与双方工资增长</p></article>
+          <article>{nextVisibleMilestone ? <><span>下个到期点减少月均支出</span><b>− ¥{money(nextVisibleMilestone.monthlyReduction)}</b><p>从第{nextVisibleMilestone.releaseMonth}个月起 · {nextVisibleMilestone.names.join("、")}</p></> : nextMilestone ? <><span>下一项支出到期</span><b>第{nextMilestone.releaseMonth}个月</b><p>{nextMilestone.names.join("、")} · 超出当前周期，本周期继续计入</p></> : <><span>未设置到期支出</span><b>按当前期限计入</b><p>无贷款无需添加；未设到期月的支出不会自动消失</p></>}</article>
+        </div>
+        {schedule.milestones.length > 0 ? <details className="expense-milestones">
+          <summary>支出到期计划（{schedule.milestones.length}个节点）</summary>
+          <p>图中标记本周期内前3个节点。最后一期仍计入，下一月开始减少支出；年费按月均摊，一次性费用不列作到期节点。</p>
+          <ul>{schedule.milestones.map((milestone) => <li key={milestone.releaseMonth}><span>{milestone.names.join("、")}</span><span>计入至第{milestone.lastPaymentMonth}个月；第{milestone.releaseMonth}个月起月均减少 ¥{money(milestone.monthlyReduction)}{milestone.releaseMonth > horizon ? "（超出本周期）" : ""}</span></li>)}</ul>
+        </details> : <p className="milestone-note">当前没有设置期限的持续性支出，图中不显示任何还款结束节点。一次性费用仍只在首月计入。</p>}
       </div>
     </section>
 
     <section className="content-section offer-section">
-      <div className="section-head"><div><span>05 · HOUSEHOLD OFFER MATRIX</span><h2>换一个人的Offer，看整个家庭会怎样</h2></div><p>选择比较对象后，系统固定另一方当前收入，只替换目标一方的月薪；阶段性收入和共同支出保持当前设置。</p></div>
+      <div className="section-head"><div><span>05 · HOUSEHOLD OFFER MATRIX</span><h2>换一个人的Offer，看整个家庭会怎样</h2></div><p>只替换目标一方的月薪，另一方收入固定。“{horizon / 12}年末工资可留”按第{horizon}个月的实际支出计算，不含阶段性收入；超出观察期的还款仍计入。</p></div>
       {householdMode === "couple" && <div className="compare-person"><span>比较对象</span><button className={effectiveCompareId === "primary" ? "active" : ""} onClick={() => setComparePersonId("primary")}>{primary.name}</button><button className={effectiveCompareId === "partner" ? "active" : ""} onClick={() => setComparePersonId("partner")}>{partner.name}</button><small>另一方收入固定</small></div>}
-      <Card className="matrix-card"><CardContent><Table><TableHeader><TableRow><TableHead>{comparePerson.name}税前月薪</TableHead><TableHead>家庭工资年包</TableHead><TableHead>家庭工资长期月均</TableHead><TableHead>家庭首年综合月均</TableHead><TableHead>首年每月可留</TableHead><TableHead>车贷后工资可留</TableHead><TableHead>判断</TableHead></TableRow></TableHeader><TableBody>{offerRows.map((item) => <TableRow key={item.salary} className={item.salary === Math.round(comparePerson.gross / 500) * 500 ? "current-row" : ""}><TableCell><b>¥{money(item.salary)}</b></TableCell><TableCell>{compactMoney(item.annualGross)}</TableCell><TableCell>¥{money(item.longTermNet)}</TableCell><TableCell>¥{money(item.firstYearNet)}</TableCell><TableCell className={item.currentLeft < 0 ? "negative-text" : ""}>{item.currentLeft < 0 ? "−" : "+"} ¥{money(Math.abs(item.currentLeft))}</TableCell><TableCell className={item.futureLeft < 0 ? "negative-text" : "positive-text"}>{item.futureLeft < 0 ? "−" : "+"} ¥{money(Math.abs(item.futureLeft))}</TableCell><TableCell><span className={`decision-pill ${item.currentLeft >= savingsTarget ? "good" : item.currentLeft >= 0 ? "tight" : "bad"}`}>{item.currentLeft >= savingsTarget ? "达到家庭目标" : item.currentLeft >= 0 ? "能覆盖但偏紧" : "家庭现金缺口"}</span></TableCell></TableRow>)}</TableBody></Table></CardContent></Card>
+      <Card className="matrix-card"><CardContent><Table><TableHeader><TableRow><TableHead>{comparePerson.name}税前月薪</TableHead><TableHead>家庭工资年包</TableHead><TableHead>家庭工资长期月均</TableHead><TableHead>家庭首年综合月均</TableHead><TableHead>首年每月可留</TableHead><TableHead>{horizon / 12}年末工资可留</TableHead><TableHead>判断</TableHead></TableRow></TableHeader><TableBody>{offerRows.map((item) => <TableRow key={item.salary} className={item.salary === Math.round(comparePerson.gross / 500) * 500 ? "current-row" : ""}><TableCell><b>¥{money(item.salary)}</b></TableCell><TableCell>{compactMoney(item.annualGross)}</TableCell><TableCell>¥{money(item.longTermNet)}</TableCell><TableCell>¥{money(item.firstYearNet)}</TableCell><TableCell className={item.currentLeft < 0 ? "negative-text" : ""}>{item.currentLeft < 0 ? "−" : "+"} ¥{money(Math.abs(item.currentLeft))}</TableCell><TableCell className={item.futureLeft < 0 ? "negative-text" : "positive-text"}>{item.futureLeft < 0 ? "−" : "+"} ¥{money(Math.abs(item.futureLeft))}</TableCell><TableCell><span className={`decision-pill ${item.currentLeft >= savingsTarget ? "good" : item.currentLeft >= 0 ? "tight" : "bad"}`}>{item.currentLeft >= savingsTarget ? "达到家庭目标" : item.currentLeft >= 0 ? "能覆盖但偏紧" : "家庭现金缺口"}</span></TableCell></TableRow>)}</TableBody></Table></CardContent></Card>
     </section>
 
     <section className="content-section settings-section" id="assumptions">
