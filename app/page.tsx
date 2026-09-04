@@ -21,6 +21,7 @@ import {
   type CityConfig, type CityKey, type Expense,
 } from "./finance";
 import { MAX_PLAN_BYTES, parsePlan, serializePlan, planFilename, type CalculatorState, type SavedPlan, type PersonId, type PersonState, type HouseholdMode, type ReverseOwner } from "./plan";
+import { formatMonthlyAxis, formatCumulativeAxis, TIMELINE_SERIES } from "./timeline-format";
 
 const STORAGE_KEY = "personal-economy-ledger-v2";
 const LEGACY_STORAGE_KEY = "personal-economy-ledger-v1";
@@ -613,10 +614,36 @@ export default function Home() {
         <div className="section-head light"><div><span>04 · HOUSEHOLD TIME HORIZON</span><h2>把两个人的现金流放进同一条时间轴</h2></div><p>家庭收入为双方当月收入之和；共同支出只扣一次。累计可动用余额会把上月结余滚入下月，低于0时表示家庭资金池出现缺口。</p></div>
         <div className="timeline-controls"><span>观察周期</span>{[36, 60, 120].map((value) => <button key={value} className={horizon === value ? "active" : ""} onClick={() => setHorizon(value)}>{value / 12}年</button>)}<label className="initial-savings" htmlFor="initial-savings"><span>家庭期初可用存款</span><div><b>¥</b><Input id="initial-savings" type="number" min={0} step={1000} placeholder="0" value={numberFieldValue(initialSavings)} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setInitialSavings(Number(event.target.value) || 0)} /></div></label></div>
         <Card className="chart-card"><CardContent>
-          <ChartContainer className="timeline-chart" config={{ net: { label: "家庭月均到手", color: "#e5a45f" }, expense: { label: "共同月支出", color: "#8ab0aa" }, surplus: { label: "家庭当月结余", color: "#d9ece8" }, cumulative: { label: "累计可动用余额", color: "#f08f7e" } }}>
-            <ComposedChart data={timeline} margin={{ left: 8, right: 6, top: 20, bottom: 0 }}><defs><linearGradient id="surplusFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#d9ece8" stopOpacity={0.42}/><stop offset="100%" stopColor="#d9ece8" stopOpacity={0.03}/></linearGradient></defs><CartesianGrid vertical={false} stroke="rgba(255,255,255,.10)" /><XAxis dataKey="month" tickFormatter={(value) => `${value}月`} interval={Math.max(5, Math.floor(horizon / 10))} tickLine={false} axisLine={false} /><YAxis yAxisId="monthly" tickFormatter={(value) => `${Math.round(Number(value) / 1000)}k`} tickLine={false} axisLine={false} width={38} /><YAxis yAxisId="cumulative" orientation="right" tickFormatter={(value) => `${(Number(value) / 10000).toFixed(0)}万`} tickLine={false} axisLine={false} width={44} /><ChartTooltip content={<ChartTooltipContent indicator="line" />} />{schedule.visibleMilestones.slice(0, 3).map((milestone) => <ReferenceLine key={milestone.releaseMonth} yAxisId="monthly" x={milestone.releaseMonth} stroke="#e5a45f" strokeDasharray="4 4" label={{ value: milestone.names.length === 1 ? `${milestone.names[0].slice(0, 8)}结束` : `${milestone.names.length}项支出结束`, fill: "#e5a45f", fontSize: 12 }} />)}<ReferenceLine yAxisId="cumulative" y={0} stroke="rgba(240,143,126,.45)" strokeDasharray="3 4" /><Area yAxisId="monthly" type="monotone" dataKey="net" stroke="var(--color-net)" fillOpacity={0} strokeWidth={2} /><Area yAxisId="monthly" type="stepAfter" dataKey="expense" stroke="var(--color-expense)" fillOpacity={0} strokeWidth={2} /><Area yAxisId="monthly" type="monotone" dataKey="surplus" stroke="var(--color-surplus)" fill="url(#surplusFill)" strokeWidth={2} /><Line yAxisId="cumulative" type="monotone" dataKey="cumulative" stroke="var(--color-cumulative)" strokeWidth={3} dot={false} activeDot={{ r: 4 }} /></ComposedChart>
+          <div className="timeline-axis-headings">
+            <div id="monthly-axis-heading"><b>← 左轴 · 月度收支</b><span>元/月 · 收入、支出、当月结余</span></div>
+            <div id="cumulative-axis-heading"><b>右轴 · 累计余额 →</b><span>万元 · 截至当月末可动用的钱</span></div>
+          </div>
+          <ChartContainer className="timeline-chart" config={TIMELINE_SERIES} aria-labelledby="monthly-axis-heading cumulative-axis-heading" aria-describedby="timeline-axis-help">
+            <ComposedChart data={timeline} margin={{ left: 4, right: 4, top: 36, bottom: 0 }}>
+              <defs><linearGradient id="surplusFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#d9ece8" stopOpacity={0.42}/><stop offset="100%" stopColor="#d9ece8" stopOpacity={0.03}/></linearGradient></defs>
+              <CartesianGrid vertical={false} stroke="rgba(255,255,255,.10)" />
+              <XAxis dataKey="month" tickFormatter={(value) => `${value}月`} interval={Math.max(5, Math.floor(horizon / 10))} tickLine={false} axisLine={false} />
+              <YAxis className="timeline-axis-monthly" yAxisId="monthly" tickFormatter={formatMonthlyAxis} tickLine={{ stroke: "#a9c5bf" }} axisLine={{ stroke: "#a9c5bf" }} width="auto" label={{ value: "元/月", position: "top", offset: 12 }} />
+              <YAxis className="timeline-axis-cumulative" yAxisId="cumulative" orientation="right" tickFormatter={formatCumulativeAxis} tickLine={{ stroke: "#f08f7e" }} axisLine={{ stroke: "#f08f7e" }} width="auto" label={{ value: "万元", position: "top", offset: 12 }} />
+              <ChartTooltip content={<ChartTooltipContent className="timeline-tooltip" labelFormatter={(_label, payload) => `第${payload[0]?.payload?.month ?? ""}个月`} formatter={(value, _name, item) => {
+                const series = TIMELINE_SERIES[item.dataKey as keyof typeof TIMELINE_SERIES];
+                if (!series) return null;
+                return <div className="timeline-tooltip-row"><span><i style={{ background: series.color }} />{series.axis} · {series.label}</span><b>{money(Number(value))} {series.unit}</b></div>;
+              }} />} />
+              {schedule.visibleMilestones.slice(0, 3).map((milestone) => <ReferenceLine key={milestone.releaseMonth} yAxisId="monthly" x={milestone.releaseMonth} stroke="#e5a45f" strokeDasharray="4 4" label={{ value: milestone.names.length === 1 ? `${milestone.names[0].slice(0, 8)}结束` : `${milestone.names.length}项支出结束`, fill: "#e5a45f", fontSize: 12 }} />)}
+              <ReferenceLine yAxisId="cumulative" y={0} stroke="rgba(240,143,126,.45)" strokeDasharray="3 4" />
+              <Area yAxisId="monthly" type="monotone" dataKey="net" stroke="var(--color-net)" fillOpacity={0} strokeWidth={2} />
+              <Area yAxisId="monthly" type="stepAfter" dataKey="expense" stroke="var(--color-expense)" fillOpacity={0} strokeWidth={2} />
+              <Area yAxisId="monthly" type="monotone" dataKey="surplus" stroke="var(--color-surplus)" fill="url(#surplusFill)" strokeWidth={2} />
+              <Line yAxisId="cumulative" type="monotone" dataKey="cumulative" stroke="var(--color-cumulative)" strokeWidth={3} dot={false} activeDot={{ r: 4 }} />
+            </ComposedChart>
           </ChartContainer>
-          <div className="chart-legend"><span><i className="income" />家庭首年综合月均 ¥{money(firstYearAverageNet)}</span><span><i className="expense" />共同支出 ¥{money(currentExpense)}</span><span><i className="future" />家庭当月结余</span><span><i className="cumulative" />累计可动用余额</span></div>
+          <div className="chart-legend timeline-axis-legend">{Object.entries(TIMELINE_SERIES).map(([key, series]) => <span key={key}><i style={{ background: series.color }} />{series.label}<small>{series.axis}</small></span>)}</div>
+          <div className="timeline-axis-help" id="timeline-axis-help">
+            <p><b>左轴怎么看：</b>10,000 表示每月 10,000 元。当月结余 = 月均到手 − 当月支出；结余低于 0 表示该月入不敷出。</p>
+            <p><b>右轴怎么看：</b>10 表示累计 10 万元。累计余额 = 期初存款 + 截至当月的所有结余；余额低于 0 表示存款也不足以覆盖累计缺口。</p>
+            <p className="timeline-scale-note">左右轴独立缩放，曲线的高度或交点不能直接比较金额。悬停或点选月份可查看具体金额，提示框统一换算为元。收入沿用月均摊测算口径，不代表实际发薪时间。</p>
+          </div>
         </CardContent></Card>
         <div className="timeline-insights">
           <article><span>第{insightMonth}个月可动用余额</span><b>¥{money(timeline[insightMonth - 1]?.cumulative ?? initialSavings)}</b><p>{nextVisibleMilestone ? `${nextVisibleMilestone.names.join("、")}停止计入后的首月` : "第一年末参考值，不假设有任何贷款到期"}</p></article>
